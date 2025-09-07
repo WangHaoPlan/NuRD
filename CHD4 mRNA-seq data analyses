@@ -1,0 +1,223 @@
+# 清理环境并垃圾回收
+rm(list = ls())
+gc()
+
+# 加载所需包
+library(DESeq2)
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+library(clusterProfiler)
+library(enrichplot)
+library(org.Sallschmidteamesiterranea.eg.db)
+
+# 设置颜色主题
+my_colors <- c("#00BFC4", "#787878", "#F8766D", "#00BA38")
+my_colors2 <- c("#91D1C2B2", "#4DBBD5B2", "#00A087B2", "#3C5488B2", 
+                "#8491B4B2", "#F39B7FB2", "#91D1C2B2", "#E64B35B2", "#DC0000B2", "#7E6148B2")
+
+# 加载数据
+load("CHD4rnai_count总样本.rdata")
+load("涡虫基因描述.rdata")  # 包含基因描述信息
+
+# 重命名基因描述数据框的列名以便后续合并
+colnames(gene_desc)[1] <- "gene_id"
+
+# 定义处理不同时间点的函数
+process_timepoint <- function(timepoint_num, count_data, sample_indices) {
+  # 提取特定时间点的数据
+  count_data_sub <- count_data[, sample_indices]
+  
+  # 设置样本名和条件
+  colnames(count_data_sub) <- c("unc22_1", "unc22_2", "unc22_3", "CHD_1", "CHD_2", "CHD_3")
+  
+  # 过滤低表达基因（所有样本计数均大于等于10）
+  count_data_sub <- count_data_sub[!apply(count_data_sub, 1, function(x) sum(round(x) < 10) > 0), ]
+  
+  # 创建样本信息数据框
+  sample_names <- colnames(count_data_sub)
+  database <- data.frame(
+    name = sample_names, 
+    condition = c("gfp", "gfp", "gfp", "rnai", "rnai", "rnai")
+  )
+  rownames(database) <- sample_names
+  
+  # 创建DESeq2对象
+  dds <- DESeqDataSetFromMatrix(count_data_sub, colData = database, design = ~ condition)
+  dds <- DESeq(dds)
+  
+  # 获取结果
+  res <- results(dds)
+  resdata <- merge(
+    as.data.frame(res), 
+    as.data.frame(counts(dds, normalized = TRUE)),
+    by = "row.names", sort = FALSE
+  )
+  
+  # 添加差异表达分类
+  resdata$change <- as.factor(
+    ifelse(
+      resdata$padj < 0.1 & abs(resdata$log2FoldChange) > 0.8,
+      ifelse(resdata$log2FoldChange > 0.8, "Up", "Down"),
+      "NoDiff"
+    )
+  )
+  
+  # 合并基因描述信息
+  resdata <- merge(resdata, gene_desc, by.x = "Row.names", by.y = "gene_id", all.x = TRUE)
+  
+  # 创建基因列表用于GSEA分析
+  gene_list <- resdata$log2FoldChange
+  names(gene_list) <- as.character(resdata$Row.names)
+  gene_list <- sort(gene_list, decreasing = TRUE)
+  
+  return(list(
+    resdata = resdata,
+    gene_list = gene_list,
+    diff_genes = resdata[resdata$change %in% c("Down", "Up"), ]
+  ))
+}
+
+# 定义各时间点的样本索引
+timepoints <- list(
+  timepoint1 = c(16:18, 1:3),
+  timepoint2 = c(19:21, 4:6),
+  timepoint3 = c(22:24, 7:9),
+  timepoint4 = c(25:27, 10:12),
+  timepoint5 = c(28:30, 13:15)
+)
+
+# 处理所有时间点
+results_list <- lapply(seq_along(timepoints), function(i) {
+  process_timepoint(i, countData, timepoints[[i]])
+})
+
+# 提取结果
+chd4_all_genes <- lapply(results_list, function(x) x$resdata)
+chd4_gene_lists <- lapply(results_list, function(x) x$gene_list)
+chd4_diff_genes <- lapply(results_list, function(x) x$diff_genes)
+
+# 命名结果以便识别
+names(chd4_all_genes) <- paste0("chd4_all_gene_", 1:5)
+names(chd4_gene_lists) <- paste0("chd4_f", 1:5, "_geneList")
+names(chd4_diff_genes) <- paste0("chd4_diff_gene_", 1:5)
+
+# 保存结果
+save(list = c(names(chd4_all_genes), names(chd4_gene_lists), names(chd4_diff_genes)), 
+     file = "chd4_analysis_results.rdata")
+
+# 绘制火山图函数
+plot_volcano <- function(resdata, title, filename) {
+  p <- ggplot(resdata, aes(log2FoldChange, -log(padj, base = 100))) +
+    geom_point(aes(color = change), size = 1) +
+    xlim(-8, 8) +
+    theme_bw(base_size = 12) +
+    scale_color_manual(values = my_colors) +
+    theme(panel.grid = element_blank(), legend.position = 'right') +
+    geom_text_repel(
+      data = filter(resdata, abs(log2FoldChange) > 1 & -log10(padj) > 10),
+      max.overlaps = 20,
+      aes(label = Symbol, color = change),
+      size = 3
+    ) +
+    xlab("Log2FC") +
+    ylab("-Log100(FDR q-value)") +
+    ggtitle(title)
+  
+  ggsave(filename, plot = p, width = 8, height = 6)
+}
+
+# 示例：绘制第五时间点的火山图
+plot_volcano(chd4_all_genes[[5]], "CHD4第五时期", "CHD4第五时期火山图_-Log100.pdf")
+
+# 绘制差异基因数量柱状图
+diff_counts <- data.frame(
+  time = rep(paste0("Time", 1:5), each = 2),
+  group = rep(c("up", "down"), 5),
+  num = sapply(chd4_diff_genes, function(x) sum(x$change == "Up" | x$change == "Down"))
+)
+
+p <- ggplot(diff_counts, aes(x = time, y = num, fill = group)) +
+  geom_bar(stat = "identity", position = position_dodge(), alpha = 0.7) +
+  theme_classic() +
+  ylab("Number of DEGs") +
+  xlab("Time Point") +
+  geom_text(aes(label = num), position = position_dodge(0.9), vjust = -0.5) +
+  scale_fill_manual(values = c("down" = my_colors[1], "up" = my_colors[3]))
+
+ggsave("chd4差异基因数目柱状图.pdf", plot = p, width = 8, height = 6)
+
+# GSEA分析函数
+run_gsea <- function(gene_list, ont = "all", filename = NULL) {
+  # GO富集分析
+  go_result <- gseGO(
+    geneList = gene_list,
+    OrgDb = org.Sallschmidteamesiterranea.eg.db,
+    keyType = "GID",
+    ont = ont,
+    minGSSize = 10,
+    maxGSSize = 1000,
+    pvalueCutoff = 1
+  )
+  
+  if (!is.null(filename)) {
+    write.csv(as.data.frame(go_result@result), 
+              file = filename, 
+              row.names = FALSE, 
+              quote = FALSE)
+  }
+  
+  return(go_result)
+}
+
+# 示例：对第四时间点进行GSEA分析
+gsea_result <- run_gsea(chd4_gene_lists[[4]], filename = "chd4_f4_geneList_Go_gseresult.csv")
+
+# 绘制GSEA结果
+p <- gseaplot2(gsea_result, geneSetID = 1:5, subplots = 1) +
+  theme_bw() +
+  scale_color_manual(values = my_colors2) +
+  labs(title = "CHD4 RNAi GSEA")
+
+ggsave("chd4_GSEA结果.pdf", plot = p, width = 10, height = 8)
+
+# 富集分析函数
+run_enrichment <- function(gene_list, type = "GO", direction = "up") {
+  if (type == "GO") {
+    ego <- enrichGO(
+      gene = gene_list,
+      OrgDb = org.Sallschmidteamesiterranea.eg.db,
+      keyType = "GID",
+      ont = "all",
+      qvalueCutoff = 1,
+      pvalueCutoff = 1
+    )
+    ego <- pairwise_termsim(ego)
+    return(ego)
+  } else if (type == "KEGG") {
+    # 加载KEGG数据
+    load("smes_all_jiemp_KEGG_pathway.rdata")
+    ekp <- enricher(
+      gene_list,
+      TERM2GENE = gene2pathway,
+      TERM2NAME = pathway2name,
+      qvalueCutoff = 1,
+      pvalueCutoff = 1
+    )
+    return(ekp)
+  }
+}
+
+# 示例：对第五时间点的上调基因进行GO富集分析
+up_genes <- chd4_diff_genes[[5]] %>% 
+  filter(change == "Up") %>% 
+  pull(Row.names)
+
+go_enrich <- run_enrichment(up_genes, "GO")
+
+# 绘制富集结果
+dotplot(go_enrich, showCategory = 10) +
+  theme_bw() +
+  scale_color_gradientn(colours = c("#330066", "#336699", "#66CC66", "#FFCC33"))
+
+ggsave("chd4_GO富集分析.pdf", width = 10, height = 8)
