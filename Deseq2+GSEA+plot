@@ -1,0 +1,150 @@
+rm(list = ls())
+gc()
+
+##计算MBD干扰后不同时期的差异基因
+##从基因表达矩阵中提取出不同时期的基因表达
+# library(DESeq2)
+setwd("D:/Ryuyan/code/MBD/20230121新分析/")
+mbd <- read.csv("mbd_all_gene.csv")
+mbd <- na.omit(mbd)
+mbd <- mbd[grep("SM",mbd$id),]
+gene_desc <- mbd[,c(1,50,51)]
+# save(gene_desc,file = "涡虫基因描述.rdata")
+##第一时期
+mbd_sub <- mbd[,c(1,29:31,26:28)]##count
+##第二时期
+mbd_sub <- mbd[,c(1,35:37,32:34)]##count
+##第三时期
+mbd_sub <- mbd[,c(1,41:43,38:40)]##count
+##第四时期
+mbd_sub <- mbd[,c(1,47:49,44:46)]##count
+
+rownames(mbd_sub) <- mbd_sub$id
+mbd_sub <- mbd_sub[,-1]
+mbd_sub <- mbd_sub[!apply(mbd_sub,1,function(x){sum(floor(x)<10)>0}),]
+
+library(DESeq2)
+sampleNames <- c("gfp1", "gfp2", "gfp3","rna1","rna2", "rna3")
+names(mbd_sub) <- sampleNames
+countData <- as.matrix(round(mbd_sub))
+rownames(countData) <- rownames(mbd_sub)
+database <- data.frame(name=sampleNames, condition=c("gfp", "gfp","gfp","rnai", "rnai","rnai"))
+rownames(database) <- sampleNames
+
+## 设置分组信息并构建dds对象
+dds <- DESeqDataSetFromMatrix(countData, colData=database, design= ~ condition)
+
+## 使用DESeq函数估计离散度，然后差异分析获得res对象
+dds <- DESeq(dds)
+res <- results(dds)
+# write.csv(res, "res_des_output.csv")
+resdata <- merge(as.data.frame(res), as.data.frame(counts(dds, normalized=TRUE)),by="row.names",sort=FALSE)
+
+# write.csv(resdata, "all_des_output.csv", row.names=FALSE)
+# library(DESeq2)
+plotMA(res, main="DESeq2", ylim=c(-2, 2))
+
+library(ggplot2)
+resdata$change <- as.factor(
+  ifelse(
+    resdata$padj<0.1 & abs(resdata$log2FoldChange)>0.8,
+    ifelse(resdata$log2FoldChange>0.8, "Up", "Down"),
+    "NoDiff"
+  )
+)
+table(resdata$change)
+resdata_diff <- resdata[which(resdata$change%in% c("Down","Up")),]
+table(resdata_diff$change)
+
+diff_gene_desc <- gene_desc[which(gene_desc$id %in% resdata_diff$Row.names),]
+colnames(diff_gene_desc)[1] <- "Row.names"
+diff_gene <- merge(resdata_diff,diff_gene_desc,by="Row.names")
+
+mbd_all_gene_1 <- resdata
+mbd_all_gene_2 <- resdata
+mbd_all_gene_3 <- resdata
+mbd_all_gene_4 <- resdata
+colnames(mbd_all_gene_1)[1] <- "gene"
+colnames(mbd_all_gene_2)[1] <- "gene"
+colnames(mbd_all_gene_3)[1] <- "gene"
+colnames(mbd_all_gene_4)[1] <- "gene"
+save(mbd_all_gene_1,
+     mbd_all_gene_2,
+     mbd_all_gene_3,
+     mbd_all_gene_4,file = "mbd_all_gene_deseq2.rdata")
+
+mbd_diff_gene_1 <- diff_gene
+mbd_diff_gene_2 <- diff_gene
+mbd_diff_gene_3 <- diff_gene
+mbd_diff_gene_4 <- diff_gene
+save(mbd_diff_gene_1,
+      mbd_diff_gene_2,
+      mbd_diff_gene_3,
+      mbd_diff_gene_4,
+      file = "mbd_diff_gene.rdata")
+
+##绘制每个时期的火山图
+colure <- c("#00BFC4","#787878","#F8766D","#00BA38")
+library(ggrepel)
+library(dplyr)
+resdata <- mbd_all_gene_4 ###替换不同时期的Deseq2结果
+colnames(gene_desc)[1] <- "Row.names"
+resdata <-  merge(resdata,gene_desc,by="Row.names")
+resdata$Symbol
+ggplot(resdata,aes(log2FoldChange, -log10(padj)))+
+  geom_point(aes(color = change),
+             size = 1, 
+             ) +xlim(-6,8)+
+  theme_bw(base_size = 12)+
+  scale_color_manual(values = colure) +
+  theme(panel.grid = element_blank(),
+        legend.position = 'right') +
+  # 添加标签：
+  geom_text_repel(data = filter(resdata, abs(log2FoldChange) > 1 & -log10(padj) > 10),
+                  max.overlaps = getOption("ggrepel.max.overlaps", default = 20),
+                  aes(label = Symbol, 
+                      color = change),
+                  size = 3) +
+  xlab("Log2FC")+
+  ylab("-Log10(FDR q-value)")
+ggsave("mbd火山图.pdf")
+
+# mbd差异基因数目柱状图
+a$group <- factor(a$group,levels=c("up","down"))
+p<- ggplot(a, aes(x = a$锘縯ime, y = a$num, fill = a$group)) +theme_classic()+  
+   geom_bar(stat = "summary", fun ="mean", position = position_dodge(),alpha=0.7)+
+   ylab("number")+xlab("time")+geom_text(aes(label = num),position = position_dodge( .9), vjust =-0.5)
+ 
+p
+ggsave("mbd差异基因数目柱状图.pdf")
+
+##将转录组结果转换为GSEA富集分析的genelist
+library(org.Sallschmidteamesiterranea.eg.db)
+library(clusterProfiler)
+library(enrichplot)
+x <- resdata
+x$fcsign <- sign(x$log2FoldChange)
+x$logP=-log10(x$pvalue)
+x$metric= x$logP/x$fcsign
+geneList = x$metric
+names(geneList) = as.character(x$Row.names)
+head(geneList)
+geneList <- sort(geneList, decreasing = TRUE)
+head(geneList)
+tail(geneList)
+
+mbd_f1_geneList <- geneList
+mbd_f2_geneList <- geneList
+mbd_f3_geneList <- geneList
+mbd_f4_geneList <- geneList
+save(mbd_f1_geneList,mbd_f2_geneList,mbd_f3_geneList,mbd_f4_geneList,file = "mbd_all_gene_deseq2_geneList_gsea.rdata")
+
+##进行富集分析
+Go_gseresult <- gseGO(geneList, OrgDb = "org.Sallschmidteamesiterranea.eg.db",keyType ="GID", ont="all", minGSSize = 10, maxGSSize = 1000, pvalueCutoff=1)
+Go_gseresultdata <- as.data.frame(Go_gseresult@result)
+write.csv(Go_gseresultdata,file = "mbd_f4_geneList_Go_gseresult.csv",row.names = FALSE,quote = FALSE)
+# GSEA分析
+Go_gseresult$Description[1:10]
+
+ridgeplot(Go_gseresult,10)
+gseaplot(Go_gseresult, by = "all", title = Go_gseresult$Description[2], geneSetID = c(2),color.line = "red",)
