@@ -1,0 +1,106 @@
+rm(list = ls())
+gc()
+
+library(ggplot2)
+library(scales)
+library(dplyr)
+library(tidyr)
+
+# 创建示例数据（8组超几何分布参数）
+set.seed(123)
+
+groups_data <- readxl::read_xlsx("乙酰化位点和甲基化位点promoter统计数据画图.xlsx")
+
+# 计算每组的关键统计量
+stats_data <- groups_data %>%
+  mutate(
+    expected = n * (K / N),
+    p_value = phyper(k_obs - 1, K, N - K, n, lower.tail = FALSE),
+    fold_enrichment = (k_obs / n) / (K / N),
+    log10_p = -log10(p_value),
+    significance = cut(p_value, 
+                       breaks = c(0, 0.001, 0.01, 0.05, 1),
+                       labels = c("***", "**", "*", "NS"))
+  ) %>%
+  # 按p值排序（从低到高，最显著的排最上）
+  arrange(p_value)
+
+# 创建点图比较
+dot_plot <- ggplot(stats_data, aes(x = fold_enrichment, y = reorder(group, fold_enrichment))) +
+  geom_point(aes(size = k_obs, fill = log10_p), shape = 21, color = "black", alpha = 0.9) +
+  geom_text(aes(label = significance, 
+                x = fold_enrichment + 0.3 * max(fold_enrichment)), 
+            size = 5, vjust = 0.7) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "gray40", size = 0.8) +
+  scale_fill_gradientn(colors = c("#63c0e4","white","#e57283"),
+                       name = "-log10(pvalue)") +
+  scale_size_continuous(range = c(4, 12), 
+                        name = "Observations (k)") +
+  labs(title = "Statistical comparison of eight sets of hypergeometric distributions",
+       subtitle = "",
+       x = "Fold Enrichment",
+       y = "Group") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 14, hjust = 0.5, margin = margin(b = 15)),
+    axis.title = element_text(face = "bold", size = 13),
+    axis.text = element_text(size = 12),
+    panel.grid.major = element_line(color = "gray90"),
+    panel.grid.minor = element_blank(),
+    legend.position = "right",
+    legend.title = element_text(face = "bold"),
+    legend.box = "vertical",
+    legend.spacing.y = unit(0.5, "cm")
+  )
+dot_plot
+ggsave("URIG和DRIG位点dot_plot.pdf", width = 7.5, height = 7.5)
+
+# 准备表格数据（保持与点图相同的排序）
+table_data <- stats_data %>% 
+  mutate(
+    # 创建k_obs/n组合列
+    Observed_Ratio = paste0(k_obs, "/", n),
+    # 创建K/N组合列
+    Background_Ratio = paste0(K, "/", N),
+    # 格式化其他列
+    FE = round(fold_enrichment, 2),
+    p = format.pval(p_value, digits = 2, eps = 1e-3)
+  ) %>%
+  select(
+    Group = group,
+    Observed = Observed_Ratio,
+    Background = Background_Ratio,
+    FE,
+    p
+  )
+
+# 添加富集倍数和p值表格（与点图排序一致）
+table_grob <- gridExtra::tableGrob(
+  table_data,
+  rows = NULL,
+  theme = gridExtra::ttheme_minimal(
+    base_size = 10,
+    padding = unit(c(4, 6), "mm"),
+    core = list(
+      fg_params = list(hjust = 1, x = 0.95),
+      bg_params = list(fill = c("white", rep(c(NA, "#f7f7f7"), length.out = nrow(table_data)-1)))
+    ),
+    colhead = list(
+      fg_params = list(fontface = "bold"),
+      bg_params = list(fill = "gray90")
+    )
+  )
+)
+# 组合点图和表格
+combined_plot <- gridExtra::grid.arrange(
+  dot_plot,
+  table_grob,
+  nrow = 1,
+  # heights = c(3, 1),  # 点图占3份高度，表格占1份
+  top = grid::textGrob("Statistical comparison of eight sets of hypergeometric distributions", 
+                       gp = grid::gpar(fontsize = 18, fontface = "bold"))
+)
+
+# 保存图形
+ggsave("comparison_plot.pdf",combined_plot, width = 12, height = 10)
